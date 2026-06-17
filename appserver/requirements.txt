@@ -1,0 +1,4 @@
+Flask==3.0.3
+Werkzeug==3.0.3
+hypothesis==6.100.1
+pytest==8.2.2
