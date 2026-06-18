@@ -4,71 +4,264 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DataBox.ai — Upload CSV</title>
-  <link
-    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-    rel="stylesheet"
-    integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
-    crossorigin="anonymous">
-</head>
-<body class="bg-light">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
+        integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
 
-  <nav class="navbar navbar-dark bg-dark mb-4">
-    <div class="container-fluid">
-      <span class="navbar-brand mb-0 h1">DataBox.ai Analytics Portal</span>
-      <a href="/logout" class="btn btn-outline-light btn-sm">Logout</a>
+    body {
+      font-family: 'Inter', sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+
+    /* ── Navbar ── */
+    .app-navbar {
+      background: #1e293b;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      padding: 0.75rem 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      text-decoration: none;
+    }
+    .nav-brand-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #3b82f6, #6366f1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1rem;
+      color: #fff;
+    }
+    .nav-brand-text {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #f8fafc;
+      letter-spacing: -0.3px;
+    }
+    .nav-brand-text span { color: #6366f1; }
+    .nav-right { display: flex; align-items: center; gap: 1rem; }
+    .nav-user {
+      font-size: 0.8rem;
+      color: #64748b;
+    }
+    .btn-logout {
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: #94a3b8;
+      background: transparent;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 0.35rem 0.8rem;
+      text-decoration: none;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+    }
+    .btn-logout:hover { background: #1e293b; color: #e2e8f0; border-color: #475569; }
+
+    /* ── Page layout ── */
+    .page-content {
+      max-width: 700px;
+      margin: 3rem auto;
+      padding: 0 1.5rem;
+    }
+    .page-header { margin-bottom: 2rem; }
+    .page-header h2 {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin: 0 0 0.25rem;
+    }
+    .page-header p { color: #64748b; font-size: 0.875rem; margin: 0; }
+
+    /* ── Upload card ── */
+    .upload-card {
+      background: #1e293b;
+      border: 1px solid rgba(255,255,255,0.07);
+      border-radius: 16px;
+      padding: 2rem;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    }
+
+    /* Drop zone */
+    .drop-zone {
+      border: 2px dashed #334155;
+      border-radius: 12px;
+      padding: 2.5rem 1.5rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      margin-bottom: 1.5rem;
+      position: relative;
+    }
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: #6366f1;
+      background: rgba(99,102,241,0.05);
+    }
+    .drop-zone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+    .drop-zone-icon {
+      font-size: 2.5rem;
+      color: #475569;
+      margin-bottom: 0.75rem;
+      display: block;
+    }
+    .drop-zone h6 { color: #94a3b8; font-size: 0.9rem; font-weight: 600; margin-bottom: 0.25rem; }
+    .drop-zone p  { color: #475569; font-size: 0.78rem; margin: 0; }
+    .drop-zone .file-chosen { color: #6366f1; font-weight: 600; font-size: 0.85rem; margin-top: 0.5rem; }
+
+    /* Constraints info */
+    .constraints {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .constraint-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.07);
+      border-radius: 20px;
+      padding: 0.3rem 0.75rem;
+      font-size: 0.75rem;
+      color: #64748b;
+    }
+    .constraint-pill i { color: #6366f1; }
+
+    /* Submit button */
+    .btn-upload {
+      background: linear-gradient(135deg, #3b82f6, #6366f1);
+      border: none;
+      border-radius: 8px;
+      color: #fff;
+      font-weight: 600;
+      font-size: 0.9rem;
+      padding: 0.65rem 1.5rem;
+      width: 100%;
+      transition: opacity 0.2s, transform 0.15s;
+      letter-spacing: 0.02em;
+    }
+    .btn-upload:hover  { opacity: 0.9; transform: translateY(-1px); color: #fff; }
+    .btn-upload:active { transform: translateY(0); }
+
+    /* Error */
+    .alert-danger {
+      background: rgba(239,68,68,0.12);
+      border: 1px solid rgba(239,68,68,0.3);
+      color: #fca5a5;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      padding: 0.65rem 0.9rem;
+      margin-bottom: 1.25rem;
+    }
+
+    /* Dashboard link */
+    .quick-link {
+      text-align: center;
+      margin-top: 1.25rem;
+      font-size: 0.8rem;
+    }
+    .quick-link a {
+      color: #475569;
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+    .quick-link a:hover { color: #94a3b8; }
+  </style>
+</head>
+<body>
+
+  <!-- Navbar -->
+  <nav class="app-navbar">
+    <a class="nav-brand" href="/upload">
+      <div class="nav-brand-icon"><i class="bi bi-bar-chart-fill"></i></div>
+      <span class="nav-brand-text">DataBox<span>.ai</span></span>
+    </a>
+    <div class="nav-right">
+      <span class="nav-user"><i class="bi bi-person-circle me-1"></i>admin</span>
+      <a href="/logout" class="btn-logout"><i class="bi bi-box-arrow-right"></i>Logout</a>
     </div>
   </nav>
 
-  <div class="container">
-    <div class="row justify-content-center">
-      <div class="col-sm-10 col-md-8 col-lg-6">
+  <!-- Page content -->
+  <div class="page-content">
+    <div class="page-header">
+      <h2>Upload Dataset</h2>
+      <p>Upload a CSV file to process and visualise your data on the dashboard.</p>
+    </div>
 
-        <div class="card shadow-sm">
-          <div class="card-header bg-dark text-white py-3">
-            <h5 class="mb-0">Upload CSV Dataset</h5>
-          </div>
-          <div class="card-body p-4">
+    <div class="upload-card">
 
-            {% if error %}
-            <div class="alert alert-danger" role="alert">
-              {{ error }}
-            </div>
-            {% endif %}
-
-            <form method="POST" action="/upload" enctype="multipart/form-data" novalidate>
-              <div class="mb-3">
-                <label for="file" class="form-label">Select CSV File</label>
-                <input
-                  type="file"
-                  class="form-control"
-                  id="file"
-                  name="file"
-                  accept=".csv"
-                  required>
-                <div class="form-text text-muted">
-                  Only <strong>.csv</strong> files are accepted. Maximum file size: <strong>16 MB</strong>.
-                </div>
-              </div>
-              <div class="d-grid">
-                <button type="submit" class="btn btn-primary">Upload &amp; Process</button>
-              </div>
-            </form>
-
-          </div>
-        </div>
-
-        <div class="mt-3 text-center">
-          <a href="/dashboard" class="text-decoration-none text-secondary small">View Dashboard</a>
-        </div>
-
+      {% if error %}
+      <div class="alert-danger" role="alert">
+        <i class="bi bi-exclamation-triangle-fill me-2"></i>{{ error }}
       </div>
+      {% endif %}
+
+      <form method="POST" action="/upload" enctype="multipart/form-data" novalidate id="upload-form">
+
+        <div class="drop-zone" id="drop-zone">
+          <input type="file" id="file" name="file" accept=".csv" required
+                 onchange="updateLabel(this)">
+          <i class="bi bi-cloud-arrow-up drop-zone-icon"></i>
+          <h6>Drag &amp; drop your CSV here</h6>
+          <p>or click to browse files</p>
+          <p class="file-chosen" id="file-label" style="display:none;"></p>
+        </div>
+
+        <div class="constraints">
+          <span class="constraint-pill"><i class="bi bi-filetype-csv"></i>.csv files only</span>
+          <span class="constraint-pill"><i class="bi bi-hdd"></i>Max 16 MB</span>
+        </div>
+
+        <button type="submit" class="btn-upload">
+          <i class="bi bi-upload me-2"></i>Upload &amp; Process
+        </button>
+
+      </form>
+    </div>
+
+    <div class="quick-link">
+      <a href="/dashboard"><i class="bi bi-speedometer2 me-1"></i>Go to Dashboard</a>
     </div>
   </div>
 
-  <script
-    src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-    integrity="sha384-YvpcrYf0tY3lHB60NNkmXc4s9bIOgUxi8T/jzmMPOpuRMjHNb6Q1qvIqGBMYMFqi"
-    crossorigin="anonymous">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+          integrity="sha384-YvpcrYf0tY3lHB60NNkmXc4s9bIOgUxi8T/jzmMPOpuRMjHNb6Q1qvIqGBMYMFqi"
+          crossorigin="anonymous"></script>
+  <script>
+    function updateLabel(input) {
+      const label = document.getElementById('file-label');
+      if (input.files && input.files[0]) {
+        label.textContent = '✓ ' + input.files[0].name;
+        label.style.display = 'block';
+      }
+    }
+    // Drag-over visual feedback
+    const zone = document.getElementById('drop-zone');
+    zone.addEventListener('dragover',  () => zone.classList.add('dragover'));
+    zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+    zone.addEventListener('drop',      () => zone.classList.remove('dragover'));
   </script>
 </body>
 </html>
