@@ -77,6 +77,11 @@ def health():
 # GET  /dashboard — render analytics page    [Auth_Guard]
 
 
+@app.route("/", methods=["GET"])
+def index():
+    return redirect(url_for("login"))
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "GET":
