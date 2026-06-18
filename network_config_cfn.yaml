@@ -1,735 +1,483 @@
----
-# ===========================================================================
-# CSTT Assignment — CloudFormation Network Stack
-# Generated from IaC_Generator template; resource IDs replaced with
-# !Ref / !GetAtt cross-references for portability.
-#
-# External IDs that cannot be derived from this stack are declared as
-# Parameters below. Fill them in before deploying to a new environment.
-# ===========================================================================
-
-Parameters:
-
-  # ---- Default VPC (172.31.0.0/16) external references ----
-  DefaultVpcInternetGatewayId:
-    Type: String
-    Description: >
-      ID of the Internet Gateway attached to the default VPC (172.31.0.0/16).
-      Example: igw-04ff9841778f70c95
-    Default: "igw-04ff9841778f70c95"
-
-  DefaultVpcRouteTableId:
-    Type: String
-    Description: >
-      ID of the main route table for the default VPC (172.31.0.0/16).
-      Example: rtb-02aad6a4ced5cf079
-    Default: "rtb-02aad6a4ced5cf079"
-
-  DefaultVpcRouteTableIdB:
-    Type: String
-    Description: >
-      ID of a second route table in the default VPC.
-      Example: rtb-042d5933579bbc609
-    Default: "rtb-042d5933579bbc609"
-
-  DefaultVpcDefaultSgSourceId:
-    Type: String
-    Description: >
-      Security Group ID used as the ingress source for the default-VPC SG
-      (self-referencing rule). Example: sg-0729fb14173808f1b
-    Default: "sg-0729fb14173808f1b"
-
-  BastionEniId:
-    Type: String
-    Description: >
-      Network Interface ID of the Bastion Host / NAT Gateway ENI for EIP
-      association. Example: eni-0cb47043f8850b049
-    Default: "eni-0cb47043f8850b049"
-
-Metadata:
-  AWSToolsMetrics:
-    IaC_Generator: "arn:aws:cloudformation:us-east-1:081338317045:generatedTemplate/ab278320-67e2-4e43-8632-841fa811f8fe"
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  DataBox.ai - Core Networking Stack (VPC, Subnets, NACLs, Security Groups,
+  Route Tables, IGW, NAT Gateway) — CSTT AWS Cloud Security Assignment.
+  Covers the CSTT VPC (10.0.0.0/16) only. Does not touch the default AWS VPC.
 
 Resources:
 
-  # ===========================================================================
-  # VPCs
-  # ===========================================================================
-
-  # CSTT assignment VPC — 10.0.0.0/16
+  # ── VPC ──────────────────────────────────────────────────────────────────
   EC2VPC:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::VPC
-    DeletionPolicy: Retain
+    Type: "AWS::EC2::VPC"
     Properties:
       CidrBlock: "10.0.0.0/16"
       EnableDnsSupport: true
-      InstanceTenancy: default
       EnableDnsHostnames: true
+      InstanceTenancy: "default"
       Tags:
-        - Key: Name
-          Value: csttassg
+        - Key: "Name"
+          Value: "csttassg"
 
-  # Default VPC — 172.31.0.0/16
-  EC2VPCE5:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::VPC
-    DeletionPolicy: Retain
+  # ── Internet Gateway ──────────────────────────────────────────────────────
+  EC2InternetGateway:
+    Type: "AWS::EC2::InternetGateway"
     Properties:
-      CidrBlock: "172.31.0.0/16"
-      EnableDnsSupport: true
-      InstanceTenancy: default
-      EnableDnsHostnames: true
-      Tags: []
+      Tags:
+        - Key: "Name"
+          Value: "cstt-assg-ig"
 
-  # ===========================================================================
-  # DHCP Options
-  # ===========================================================================
-
-  EC2DHCPOptions:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::DHCPOptions
-    DeletionPolicy: Retain
+  EC2VPCGatewayAttachmentIGW:
+    Type: "AWS::EC2::VPCGatewayAttachment"
     Properties:
-      DomainName: ec2.internal
-      DomainNameServers:
-        - AmazonProvidedDNS
-      Tags: []
-
-  # ===========================================================================
-  # Subnets — CSTT VPC (10.0.0.0/16)
-  # ===========================================================================
-
-  # Public Subnet A — 10.0.1.0/24 (us-east-1a)  [Bastion Host lives here]
-  EC2SubnetWM:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Subnet
-    DeletionPolicy: Retain
-    Properties:
-      MapPublicIpOnLaunch: true
-      EnableDns64: false
       VpcId: !Ref EC2VPC
-      AvailabilityZoneId: use1-az4
-      PrivateDnsNameOptionsOnLaunch:
-        EnableResourceNameDnsARecord: false
-        HostnameType: ip-name
-        EnableResourceNameDnsAAAARecord: false
-      AvailabilityZone: us-east-1a
-      CidrBlock: "10.0.1.0/24"
-      Ipv6Native: false
+      InternetGatewayId: !Ref EC2InternetGateway
+
+  # ── Elastic IP for NAT Gateway ────────────────────────────────────────────
+  EC2EIPNatGateway:
+    Type: "AWS::EC2::EIP"
+    DependsOn: EC2VPCGatewayAttachmentIGW
+    Properties:
+      Domain: "vpc"
       Tags:
-        - Key: Name
-          Value: cstt-public-subnet-a
+        - Key: "Name"
+          Value: "cstt-nat-eip"
 
-  # Public Subnet B — 10.0.2.0/24 (us-east-1b)
-  EC2SubnetNY:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Subnet
-    DeletionPolicy: Retain
-    Properties:
-      MapPublicIpOnLaunch: true
-      EnableDns64: false
-      VpcId: !Ref EC2VPC
-      AvailabilityZoneId: use1-az6
-      PrivateDnsNameOptionsOnLaunch:
-        EnableResourceNameDnsARecord: false
-        HostnameType: ip-name
-        EnableResourceNameDnsAAAARecord: false
-      AvailabilityZone: us-east-1b
-      CidrBlock: "10.0.2.0/24"
-      Ipv6Native: false
-      Tags:
-        - Key: Name
-          Value: cstt-public-subnet-b
-
-  # Private Subnet A — 10.0.3.0/24 (us-east-1a)  [App Server lives here]
-  EC2SubnetLc:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Subnet
-    DeletionPolicy: Retain
-    Properties:
-      MapPublicIpOnLaunch: false
-      EnableDns64: false
-      VpcId: !Ref EC2VPC
-      AvailabilityZoneId: use1-az4
-      PrivateDnsNameOptionsOnLaunch:
-        EnableResourceNameDnsARecord: false
-        HostnameType: ip-name
-        EnableResourceNameDnsAAAARecord: false
-      AvailabilityZone: us-east-1a
-      CidrBlock: "10.0.3.0/24"
-      Ipv6Native: false
-      Tags:
-        - Key: Name
-          Value: cstt-private-subnet-a
-
-  # Private Subnet B — 10.0.4.0/24 (us-east-1b)
-  EC2Subnet:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Subnet
-    DeletionPolicy: Retain
-    Properties:
-      MapPublicIpOnLaunch: false
-      EnableDns64: false
-      VpcId: !Ref EC2VPC
-      AvailabilityZoneId: use1-az6
-      PrivateDnsNameOptionsOnLaunch:
-        EnableResourceNameDnsARecord: false
-        HostnameType: ip-name
-        EnableResourceNameDnsAAAARecord: false
-      AvailabilityZone: us-east-1b
-      CidrBlock: "10.0.4.0/24"
-      Ipv6Native: false
-      Tags:
-        - Key: Name
-          Value: cstt-private-subnet-b
-
-  # ===========================================================================
-  # Subnets — Default VPC (172.31.0.0/16)
-  # ===========================================================================
-
-  EC2SubnetML:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Subnet
-    DeletionPolicy: Retain
-    Properties:
-      MapPublicIpOnLaunch: true
-      EnableDns64: false
-      VpcId: !Ref EC2VPCE5
-      AvailabilityZoneId: use1-az4
-      PrivateDnsNameOptionsOnLaunch:
-        EnableResourceNameDnsARecord: false
-        HostnameType: ip-name
-        EnableResourceNameDnsAAAARecord: false
-      AvailabilityZone: us-east-1a
-      CidrBlock: "172.31.16.0/20"
-      Ipv6Native: false
-      Tags: []
-
-  EC2SubnetW5:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Subnet
-    DeletionPolicy: Retain
-    Properties:
-      MapPublicIpOnLaunch: true
-      EnableDns64: false
-      VpcId: !Ref EC2VPCE5
-      AvailabilityZoneId: use1-az1
-      PrivateDnsNameOptionsOnLaunch:
-        EnableResourceNameDnsARecord: false
-        HostnameType: ip-name
-        EnableResourceNameDnsAAAARecord: false
-      AvailabilityZone: us-east-1c
-      CidrBlock: "172.31.0.0/20"
-      Ipv6Native: false
-      Tags: []
-
-  EC2SubnetW0:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Subnet
-    DeletionPolicy: Retain
-    Properties:
-      MapPublicIpOnLaunch: true
-      EnableDns64: false
-      VpcId: !Ref EC2VPCE5
-      AvailabilityZoneId: use1-az2
-      PrivateDnsNameOptionsOnLaunch:
-        EnableResourceNameDnsARecord: false
-        HostnameType: ip-name
-        EnableResourceNameDnsAAAARecord: false
-      AvailabilityZone: us-east-1d
-      CidrBlock: "172.31.80.0/20"
-      Ipv6Native: false
-      Tags: []
-
-  EC2SubnetRD:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Subnet
-    DeletionPolicy: Retain
-    Properties:
-      MapPublicIpOnLaunch: true
-      EnableDns64: false
-      VpcId: !Ref EC2VPCE5
-      AvailabilityZoneId: use1-az6
-      PrivateDnsNameOptionsOnLaunch:
-        EnableResourceNameDnsARecord: false
-        HostnameType: ip-name
-        EnableResourceNameDnsAAAARecord: false
-      AvailabilityZone: us-east-1b
-      CidrBlock: "172.31.32.0/20"
-      Ipv6Native: false
-      Tags: []
-
-  EC2SubnetBV:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Subnet
-    DeletionPolicy: Retain
-    Properties:
-      MapPublicIpOnLaunch: true
-      EnableDns64: false
-      VpcId: !Ref EC2VPCE5
-      AvailabilityZoneId: use1-az5
-      PrivateDnsNameOptionsOnLaunch:
-        EnableResourceNameDnsARecord: false
-        HostnameType: ip-name
-        EnableResourceNameDnsAAAARecord: false
-      AvailabilityZone: us-east-1f
-      CidrBlock: "172.31.64.0/20"
-      Ipv6Native: false
-      Tags: []
-
-  EC2SubnetO8:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Subnet
-    DeletionPolicy: Retain
-    Properties:
-      MapPublicIpOnLaunch: true
-      EnableDns64: false
-      VpcId: !Ref EC2VPCE5
-      AvailabilityZoneId: use1-az3
-      PrivateDnsNameOptionsOnLaunch:
-        EnableResourceNameDnsARecord: false
-        HostnameType: ip-name
-        EnableResourceNameDnsAAAARecord: false
-      AvailabilityZone: us-east-1e
-      CidrBlock: "172.31.48.0/20"
-      Ipv6Native: false
-      Tags: []
-
-  # ===========================================================================
-  # Security Groups
-  # ===========================================================================
-
-  # Default SG for the default VPC (self-referencing ingress)
-  EC2SecurityGroup:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::SecurityGroup
-    DeletionPolicy: Retain
-    Properties:
-      GroupDescription: default VPC security group
-      GroupName: default
-      VpcId: !Ref EC2VPCE5
-      SecurityGroupIngress:
-        - IpProtocol: "-1"
-          FromPort: -1
-          ToPort: -1
-          # Self-referencing rule: source is the SG itself.
-          # On first create this must reference its own ID — use the Parameter
-          # if importing, or replace with !GetAtt EC2SecurityGroup.GroupId after
-          # the SG is created (two-pass deploy).
-          SourceSecurityGroupId: !Ref DefaultVpcDefaultSgSourceId
-          SourceSecurityGroupOwnerId: "081338317045"
-      SecurityGroupEgress:
-        - CidrIp: "0.0.0.0/0"
-          IpProtocol: "-1"
-          FromPort: -1
-          ToPort: -1
-
-  # ===========================================================================
-  # Internet Gateway — CSTT VPC
-  # (The IGW itself is not in the source template; only its routes are.
-  #  If you need to create it here, uncomment the block below and update routes.)
-  #
-  # EC2InternetGateway:
-  #   Type: AWS::EC2::InternetGateway
-  #   Properties:
-  #     Tags:
-  #       - Key: Name
-  #         Value: cstt-igw
-  #
-  # EC2VPCGatewayAttachment:
-  #   Type: AWS::EC2::VPCGatewayAttachment
-  #   Properties:
-  #     VpcId: !Ref EC2VPC
-  #     InternetGatewayId: !Ref EC2InternetGateway
-  # ===========================================================================
-
-  # ===========================================================================
-  # Elastic IP — NAT Gateway
-  # ===========================================================================
-
-  EC2EIP10052136169:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::EIP
-    DeletionPolicy: Retain
-    Properties:
-      PublicIpv4Pool: amazon
-      Domain: vpc
-      NetworkBorderGroup: us-east-1
-      Tags: []
-
-  EC2EIPAssociation:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::EIPAssociation
-    DeletionPolicy: Retain
-    Properties:
-      PrivateIpAddress: "10.0.1.215"
-      NetworkInterfaceId: !Ref BastionEniId
-      AllocationId: !GetAtt EC2EIP10052136169.AllocationId
-
-  # ===========================================================================
-  # NAT Gateway — Public Subnet A (provides outbound internet for private subnets)
-  # ===========================================================================
-
+  # ── NAT Gateway (placed in Public Subnet A) ───────────────────────────────
+  # Allows private subnets to initiate outbound internet traffic (e.g. apt-get)
+  # without being directly reachable from the internet.
   EC2NatGateway:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::NatGateway
-    DeletionPolicy: Retain
-    DependsOn: EC2EIP10052136169
+    Type: "AWS::EC2::NatGateway"
+    DependsOn: EC2VPCGatewayAttachmentIGW
     Properties:
-      ConnectivityType: public
-      SubnetId: !Ref EC2SubnetWM
-      AllocationId: !GetAtt EC2EIP10052136169.AllocationId
+      ConnectivityType: "public"
+      SubnetId: !Ref EC2SubnetPublicA
+      AllocationId: !GetAtt EC2EIPNatGateway.AllocationId
       Tags:
-        - Key: Name
-          Value: appservnatgate
+        - Key: "Name"
+          Value: "appservnatgate"
 
-  # ===========================================================================
-  # Route Tables — CSTT VPC
-  # ===========================================================================
+  # ── Subnets ───────────────────────────────────────────────────────────────
+  EC2SubnetPublicA:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref EC2VPC
+      CidrBlock: "10.0.1.0/24"
+      AvailabilityZone: "us-east-1a"
+      MapPublicIpOnLaunch: true
+      EnableDns64: false
+      Ipv6Native: false
+      PrivateDnsNameOptionsOnLaunch:
+        HostnameType: "ip-name"
+        EnableResourceNameDnsARecord: false
+        EnableResourceNameDnsAAAARecord: false
+      Tags:
+        - Key: "Name"
+          Value: "cstt-public-subnet-a"
 
-  # Public route table
-  EC2RouteTableCA:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::RouteTable
-    DeletionPolicy: Retain
+  EC2SubnetPublicB:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref EC2VPC
+      CidrBlock: "10.0.2.0/24"
+      AvailabilityZone: "us-east-1b"
+      MapPublicIpOnLaunch: true
+      EnableDns64: false
+      Ipv6Native: false
+      PrivateDnsNameOptionsOnLaunch:
+        HostnameType: "ip-name"
+        EnableResourceNameDnsARecord: false
+        EnableResourceNameDnsAAAARecord: false
+      Tags:
+        - Key: "Name"
+          Value: "cstt-public-subnet-b"
+
+  EC2SubnetPrivateA:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref EC2VPC
+      CidrBlock: "10.0.3.0/24"
+      AvailabilityZone: "us-east-1a"
+      MapPublicIpOnLaunch: false
+      EnableDns64: false
+      Ipv6Native: false
+      PrivateDnsNameOptionsOnLaunch:
+        HostnameType: "ip-name"
+        EnableResourceNameDnsARecord: false
+        EnableResourceNameDnsAAAARecord: false
+      Tags:
+        - Key: "Name"
+          Value: "cstt-private-subnet-a"
+
+  EC2SubnetPrivateB:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref EC2VPC
+      CidrBlock: "10.0.4.0/24"
+      AvailabilityZone: "us-east-1b"
+      MapPublicIpOnLaunch: false
+      EnableDns64: false
+      Ipv6Native: false
+      PrivateDnsNameOptionsOnLaunch:
+        HostnameType: "ip-name"
+        EnableResourceNameDnsARecord: false
+        EnableResourceNameDnsAAAARecord: false
+      Tags:
+        - Key: "Name"
+          Value: "cstt-private-subnet-b"
+
+  # ── Route Tables ──────────────────────────────────────────────────────────
+  EC2RouteTablePublic:
+    Type: "AWS::EC2::RouteTable"
     Properties:
       VpcId: !Ref EC2VPC
       Tags:
-        - Key: Name
-          Value: public-rt
+        - Key: "Name"
+          Value: "public-rt"
 
-  # Private route table
-  EC2RouteTableD7:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::RouteTable
-    DeletionPolicy: Retain
+  EC2RouteTablePrivate:
+    Type: "AWS::EC2::RouteTable"
     Properties:
       VpcId: !Ref EC2VPC
       Tags:
-        - Key: Name
-          Value: private-rt
+        - Key: "Name"
+          Value: "private-rt"
 
-  # Untagged auxiliary route table
-  EC2RouteTableBR:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::RouteTable
-    DeletionPolicy: Retain
+  # Public default route → Internet Gateway
+  EC2RoutePublicDefault:
+    Type: "AWS::EC2::Route"
+    DependsOn: EC2VPCGatewayAttachmentIGW
     Properties:
-      VpcId: !Ref EC2VPC
-
-  # Default VPC route table
-  EC2RouteTable:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::RouteTable
-    DeletionPolicy: Retain
-    Properties:
-      VpcId: !Ref EC2VPCE5
-
-  # ===========================================================================
-  # Routes — CSTT VPC
-  # ===========================================================================
-
-  # Public subnet default route → Internet Gateway
-  # NOTE: Replace "igw-009f58b34a08a3758" with !Ref EC2InternetGateway if you
-  # uncomment the IGW resource block above.
-  EC2RouteBQ:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Route
-    DeletionPolicy: Retain
-    Properties:
-      RouteTableId: !Ref EC2RouteTableCA
+      RouteTableId: !Ref EC2RouteTablePublic
       DestinationCidrBlock: "0.0.0.0/0"
-      GatewayId: "igw-009f58b34a08a3758"
+      GatewayId: !Ref EC2InternetGateway
 
-  # Public subnet local route
-  EC2RouteMC:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Route
-    DeletionPolicy: Retain
-    Properties:
-      RouteTableId: !Ref EC2RouteTableCA
-      DestinationCidrBlock: "10.0.0.0/16"
-      GatewayId: local
-
-  # Private subnet default route → NAT Gateway
-  EC2RouteYD:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Route
-    DeletionPolicy: Retain
+  # Private default route → NAT Gateway (outbound internet for App Server)
+  EC2RoutePrivateDefault:
+    Type: "AWS::EC2::Route"
     DependsOn: EC2NatGateway
     Properties:
-      RouteTableId: !Ref EC2RouteTableD7
+      RouteTableId: !Ref EC2RouteTablePrivate
       DestinationCidrBlock: "0.0.0.0/0"
       NatGatewayId: !Ref EC2NatGateway
 
-  # Private subnet local route
-  EC2RouteS6:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Route
-    DeletionPolicy: Retain
+  # ── Route Table Associations ──────────────────────────────────────────────
+  EC2SubnetRouteTableAssociationPublicA:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
     Properties:
-      RouteTableId: !Ref EC2RouteTableD7
-      DestinationCidrBlock: "10.0.0.0/16"
-      GatewayId: local
+      SubnetId: !Ref EC2SubnetPublicA
+      RouteTableId: !Ref EC2RouteTablePublic
 
-  # ===========================================================================
-  # Routes — Default VPC
-  # ===========================================================================
-
-  # Default VPC local route (172.31.0.0/16)
-  EC2RouteFj:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Route
-    DeletionPolicy: Retain
+  EC2SubnetRouteTableAssociationPublicB:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
     Properties:
-      RouteTableId: !Ref DefaultVpcRouteTableId
-      DestinationCidrBlock: "172.31.0.0/16"
-      GatewayId: local
+      SubnetId: !Ref EC2SubnetPublicB
+      RouteTableId: !Ref EC2RouteTablePublic
 
-  # Default VPC internet route → IGW
-  EC2Route:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Route
-    DeletionPolicy: Retain
+  EC2SubnetRouteTableAssociationPrivateA:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
     Properties:
-      RouteTableId: !Ref DefaultVpcRouteTableId
-      DestinationCidrBlock: "0.0.0.0/0"
-      GatewayId: !Ref DefaultVpcInternetGatewayId
+      SubnetId: !Ref EC2SubnetPrivateA
+      RouteTableId: !Ref EC2RouteTablePrivate
 
-  # Default VPC secondary table local route (10.0.0.0/16)
-  EC2RouteHc:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::Route
-    DeletionPolicy: Retain
+  EC2SubnetRouteTableAssociationPrivateB:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
     Properties:
-      RouteTableId: !Ref DefaultVpcRouteTableIdB
-      DestinationCidrBlock: "10.0.0.0/16"
-      GatewayId: local
+      SubnetId: !Ref EC2SubnetPrivateB
+      RouteTableId: !Ref EC2RouteTablePrivate
 
-  # ===========================================================================
-  # Subnet → Route Table Associations — CSTT VPC
-  # ===========================================================================
-
-  # Public Subnet A → public-rt
-  EC2SubnetRouteTableAssociation:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    DeletionPolicy: Retain
-    Properties:
-      RouteTableId: !Ref EC2RouteTableCA
-      SubnetId: !Ref EC2SubnetWM
-
-  # Public Subnet B → public-rt
-  EC2SubnetRouteTableAssociationPx:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    DeletionPolicy: Retain
-    Properties:
-      RouteTableId: !Ref EC2RouteTableCA
-      SubnetId: !Ref EC2SubnetNY
-
-  # Private Subnet A → private-rt
-  EC2SubnetRouteTableAssociationER:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    DeletionPolicy: Retain
-    Properties:
-      RouteTableId: !Ref EC2RouteTableD7
-      SubnetId: !Ref EC2SubnetLc
-
-  # Private Subnet B → private-rt
-  EC2SubnetRouteTableAssociationMK:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    DeletionPolicy: Retain
-    Properties:
-      RouteTableId: !Ref EC2RouteTableD7
-      SubnetId: !Ref EC2Subnet
-
-  # ===========================================================================
-  # Network ACLs
-  # ===========================================================================
-
-  # CSTT public-facing ACL
-  EC2NetworkAcl:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::NetworkAcl
-    DeletionPolicy: Retain
+  # ── Network ACLs ──────────────────────────────────────────────────────────
+  EC2NetworkAclPublic:
+    Type: "AWS::EC2::NetworkAcl"
     Properties:
       VpcId: !Ref EC2VPC
       Tags:
-        - Key: Name
-          Value: cstt-public-acl
+        - Key: "Name"
+          Value: "cstt-public-acl"
 
-  # CSTT private ACL
-  EC2NetworkAclPO:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::NetworkAcl
-    DeletionPolicy: Retain
+  EC2NetworkAclPrivate:
+    Type: "AWS::EC2::NetworkAcl"
     Properties:
       VpcId: !Ref EC2VPC
       Tags:
-        - Key: Name
-          Value: cstt-private-acl
+        - Key: "Name"
+          Value: "cstt-private-acl"
 
-  # CSTT untagged ACL
-  EC2NetworkAclDb:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::NetworkAcl
-    DeletionPolicy: Retain
+  # Public NACL — Inbound
+  PublicNACLInboundSSH:
+    Type: "AWS::EC2::NetworkAclEntry"
     Properties:
+      NetworkAclId: !Ref EC2NetworkAclPublic
+      RuleNumber: 100
+      Protocol: 6
+      RuleAction: "allow"
+      Egress: false
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: 22
+        To: 22
+
+  PublicNACLInboundHTTPS:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref EC2NetworkAclPublic
+      RuleNumber: 110
+      Protocol: 6
+      RuleAction: "allow"
+      Egress: false
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: 443
+        To: 443
+
+  PublicNACLInboundHTTP:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref EC2NetworkAclPublic
+      RuleNumber: 120
+      Protocol: 6
+      RuleAction: "allow"
+      Egress: false
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: 80
+        To: 80
+
+  PublicNACLInboundEphemeral:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref EC2NetworkAclPublic
+      RuleNumber: 900
+      Protocol: 6
+      RuleAction: "allow"
+      Egress: false
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: 1024
+        To: 65535
+
+  # Public NACL — Outbound
+  PublicNACLOutboundSSH:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref EC2NetworkAclPublic
+      RuleNumber: 100
+      Protocol: 6
+      RuleAction: "allow"
+      Egress: true
+      CidrBlock: "10.0.0.0/16"
+      PortRange:
+        From: 22
+        To: 22
+
+  PublicNACLOutboundEphemeral:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref EC2NetworkAclPublic
+      RuleNumber: 110
+      Protocol: 6
+      RuleAction: "allow"
+      Egress: true
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: 1024
+        To: 65535
+
+  # Private NACL — Inbound
+  PrivateNACLInboundSSH:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref EC2NetworkAclPrivate
+      RuleNumber: 100
+      Protocol: 6
+      RuleAction: "allow"
+      Egress: false
+      CidrBlock: "10.0.1.0/24"
+      PortRange:
+        From: 22
+        To: 22
+
+  PrivateNACLInboundHTTP:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref EC2NetworkAclPrivate
+      RuleNumber: 110
+      Protocol: 6
+      RuleAction: "allow"
+      Egress: false
+      CidrBlock: "10.0.1.0/24"
+      PortRange:
+        From: 80
+        To: 80
+
+  PrivateNACLInboundEphemeral:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref EC2NetworkAclPrivate
+      RuleNumber: 120
+      Protocol: 6
+      RuleAction: "allow"
+      Egress: false
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: 1024
+        To: 65535
+
+  # Private NACL — Outbound
+  PrivateNACLOutboundHTTPS:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref EC2NetworkAclPrivate
+      RuleNumber: 100
+      Protocol: 6
+      RuleAction: "allow"
+      Egress: true
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: 443
+        To: 443
+
+  PrivateNACLOutboundHTTP:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref EC2NetworkAclPrivate
+      RuleNumber: 110
+      Protocol: 6
+      RuleAction: "allow"
+      Egress: true
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: 80
+        To: 80
+
+  PrivateNACLOutboundEphemeral:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref EC2NetworkAclPrivate
+      RuleNumber: 120
+      Protocol: 6
+      RuleAction: "allow"
+      Egress: true
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: 1024
+        To: 65535
+
+  # ── NACL Associations ─────────────────────────────────────────────────────
+  EC2SubnetNACLAssocPublicA:
+    Type: "AWS::EC2::SubnetNetworkAclAssociation"
+    Properties:
+      NetworkAclId: !Ref EC2NetworkAclPublic
+      SubnetId: !Ref EC2SubnetPublicA
+
+  EC2SubnetNACLAssocPublicB:
+    Type: "AWS::EC2::SubnetNetworkAclAssociation"
+    Properties:
+      NetworkAclId: !Ref EC2NetworkAclPublic
+      SubnetId: !Ref EC2SubnetPublicB
+
+  EC2SubnetNACLAssocPrivateA:
+    Type: "AWS::EC2::SubnetNetworkAclAssociation"
+    Properties:
+      NetworkAclId: !Ref EC2NetworkAclPrivate
+      SubnetId: !Ref EC2SubnetPrivateA
+
+  EC2SubnetNACLAssocPrivateB:
+    Type: "AWS::EC2::SubnetNetworkAclAssociation"
+    Properties:
+      NetworkAclId: !Ref EC2NetworkAclPrivate
+      SubnetId: !Ref EC2SubnetPrivateB
+
+  # ── Security Groups ───────────────────────────────────────────────────────
+  EC2SecurityGroupBastion:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupName: "bastionhostsg"
+      GroupDescription: "SSH access to Bastion Host from allowed IP only"
       VpcId: !Ref EC2VPC
-      Tags: []
+      SecurityGroupIngress:
+        - IpProtocol: "tcp"
+          FromPort: 22
+          ToPort: 22
+          CidrIp: "195.133.135.250/32"
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          FromPort: -1
+          ToPort: -1
+          CidrIp: "0.0.0.0/0"
 
-  # Default VPC ACL
-  EC2NetworkAclIa:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::NetworkAcl
-    DeletionPolicy: Retain
+  EC2SecurityGroupAppServer:
+    Type: "AWS::EC2::SecurityGroup"
     Properties:
-      VpcId: !Ref EC2VPCE5
-      Tags: []
+      GroupName: "appserversg"
+      GroupDescription: "SSH and web traffic from Bastion Host only"
+      VpcId: !Ref EC2VPC
+      SecurityGroupIngress:
+        - IpProtocol: "tcp"
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref EC2SecurityGroupBastion
+        - IpProtocol: "tcp"
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref EC2SecurityGroupBastion
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          FromPort: -1
+          ToPort: -1
+          CidrIp: "0.0.0.0/0"
 
-  # ===========================================================================
-  # Subnet → Network ACL Associations — CSTT VPC
-  # ===========================================================================
-
-  # Public Subnet A → cstt-public-acl
-  EC2SubnetNetworkAclAssociation:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::SubnetNetworkAclAssociation
-    DeletionPolicy: Retain
-    Properties:
-      NetworkAclId: !Ref EC2NetworkAcl
-      SubnetId: !Ref EC2SubnetWM
-
-  # Public Subnet B → cstt-public-acl
-  EC2SubnetNetworkAclAssociationVm:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::SubnetNetworkAclAssociation
-    DeletionPolicy: Retain
-    Properties:
-      NetworkAclId: !Ref EC2NetworkAcl
-      SubnetId: !Ref EC2SubnetNY
-
-  # Private Subnet A → cstt-private-acl
-  EC2SubnetNetworkAclAssociationM6:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::SubnetNetworkAclAssociation
-    DeletionPolicy: Retain
-    Properties:
-      NetworkAclId: !Ref EC2NetworkAclPO
-      SubnetId: !Ref EC2SubnetLc
-
-  # Private Subnet B → cstt-private-acl
-  EC2SubnetNetworkAclAssociationTS:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::SubnetNetworkAclAssociation
-    DeletionPolicy: Retain
-    Properties:
-      NetworkAclId: !Ref EC2NetworkAclPO
-      SubnetId: !Ref EC2Subnet
-
-  # Additional private-ACL associations (extra subnets/ENIs tracked by AWS)
-  EC2SubnetNetworkAclAssociationOJ:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::SubnetNetworkAclAssociation
-    DeletionPolicy: Retain
-    Properties:
-      NetworkAclId: !Ref EC2NetworkAclPO
-      SubnetId: !Ref EC2Subnet
-
-  EC2SubnetNetworkAclAssociationQ4:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::SubnetNetworkAclAssociation
-    DeletionPolicy: Retain
-    Properties:
-      NetworkAclId: !Ref EC2NetworkAclPO
-      SubnetId: !Ref EC2SubnetLc
-
-  EC2SubnetNetworkAclAssociationY3:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::SubnetNetworkAclAssociation
-    DeletionPolicy: Retain
-    Properties:
-      NetworkAclId: !Ref EC2NetworkAclPO
-      SubnetId: !Ref EC2SubnetLc
-
-  EC2SubnetNetworkAclAssociationPJ:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::SubnetNetworkAclAssociation
-    DeletionPolicy: Retain
-    Properties:
-      NetworkAclId: !Ref EC2NetworkAclPO
-      SubnetId: !Ref EC2SubnetLc
-
-  EC2SubnetNetworkAclAssociationVB:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::SubnetNetworkAclAssociation
-    DeletionPolicy: Retain
-    Properties:
-      NetworkAclId: !Ref EC2NetworkAclPO
-      SubnetId: !Ref EC2Subnet
-
-  EC2SubnetNetworkAclAssociationDP:
-    UpdateReplacePolicy: Retain
-    Type: AWS::EC2::SubnetNetworkAclAssociation
-    DeletionPolicy: Retain
-    Properties:
-      NetworkAclId: !Ref EC2NetworkAclPO
-      SubnetId: !Ref EC2Subnet
-
-# ===========================================================================
-# Outputs — expose key resource IDs for cross-stack references
-# ===========================================================================
-
+# ── Outputs ───────────────────────────────────────────────────────────────────
 Outputs:
-
-  CSTTVpcId:
-    Description: CSTT VPC ID
+  VPCId:
     Value: !Ref EC2VPC
+    Description: "CSTT VPC ID"
     Export:
-      Name: !Sub "${AWS::StackName}-CSTTVpcId"
+      Name: !Sub "${AWS::StackName}-VPCId"
 
-  PublicSubnetAId:
-    Description: Public Subnet A (10.0.1.0/24, us-east-1a) — Bastion Host
-    Value: !Ref EC2SubnetWM
+  PublicSubnetA:
+    Value: !Ref EC2SubnetPublicA
+    Description: "Public Subnet A (10.0.1.0/24) — Bastion Host"
     Export:
       Name: !Sub "${AWS::StackName}-PublicSubnetA"
 
-  PublicSubnetBId:
-    Description: Public Subnet B (10.0.2.0/24, us-east-1b)
-    Value: !Ref EC2SubnetNY
+  PublicSubnetB:
+    Value: !Ref EC2SubnetPublicB
+    Description: "Public Subnet B (10.0.2.0/24)"
     Export:
       Name: !Sub "${AWS::StackName}-PublicSubnetB"
 
-  PrivateSubnetAId:
-    Description: Private Subnet A (10.0.3.0/24, us-east-1a) — App Server
-    Value: !Ref EC2SubnetLc
+  PrivateSubnetA:
+    Value: !Ref EC2SubnetPrivateA
+    Description: "Private Subnet A (10.0.3.0/24) — App Server"
     Export:
       Name: !Sub "${AWS::StackName}-PrivateSubnetA"
 
-  PrivateSubnetBId:
-    Description: Private Subnet B (10.0.4.0/24, us-east-1b)
-    Value: !Ref EC2Subnet
+  PrivateSubnetB:
+    Value: !Ref EC2SubnetPrivateB
+    Description: "Private Subnet B (10.0.4.0/24)"
     Export:
       Name: !Sub "${AWS::StackName}-PrivateSubnetB"
 
   NatGatewayId:
-    Description: NAT Gateway ID
     Value: !Ref EC2NatGateway
+    Description: "NAT Gateway ID (appservnatgate)"
     Export:
       Name: !Sub "${AWS::StackName}-NatGatewayId"
 
-  PublicRouteTableId:
-    Description: Public route table ID
-    Value: !Ref EC2RouteTableCA
+  NatGatewayEIP:
+    Value: !Ref EC2EIPNatGateway
+    Description: "Elastic IP address of the NAT Gateway"
     Export:
-      Name: !Sub "${AWS::StackName}-PublicRouteTable"
+      Name: !Sub "${AWS::StackName}-NatGatewayEIP"
 
-  PrivateRouteTableId:
-    Description: Private route table ID
-    Value: !Ref EC2RouteTableD7
+  BastionSGId:
+    Value: !Ref EC2SecurityGroupBastion
+    Description: "Bastion Host Security Group ID"
     Export:
-      Name: !Sub "${AWS::StackName}-PrivateRouteTable"
+      Name: !Sub "${AWS::StackName}-BastionSGId"
+
+  AppServerSGId:
+    Value: !Ref EC2SecurityGroupAppServer
+    Description: "App Server Security Group ID"
+    Export:
+      Name: !Sub "${AWS::StackName}-AppServerSGId"
