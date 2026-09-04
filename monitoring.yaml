@@ -1,0 +1,574 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Monitoring & Observability Stack.
+  Provisions: CloudTrail (multi-region) → S3, CloudWatch Log Group, metric
+  filters + alarms (failed logins, sensitive API actions, EC2 state changes,
+  high CPU), SNS topic for admin notifications, EC2 auto-recovery alarm,
+  and a CloudWatch Dashboard (EC2 CPU, S3 requests, log metrics, GuardDuty
+  findings placeholder).
+
+# ── Parameters ────────────────────────────────────────────────────────────────
+Parameters:
+
+  NetworkStackName:
+    Type: String
+    Description: Name of the deployed network stack (used to tag resources).
+    Default: "cstt-network"
+
+  ASGName:
+    Type: String
+    Description: >
+      Name of the Auto Scaling Group created manually in the console.
+      Used as a dimension for the EC2 CPU alarm and dashboard widget.
+    Default: "appserver-asg"
+
+  AdminEmail:
+    Type: String
+    Description: >
+      Email address for SNS alarm notifications. Not used by the template
+      directly — add the subscription manually after deployment (see SNS topic
+      comment below).
+    Default: "admin@example.com"
+
+  TrailBucketName:
+    Type: String
+    Description: >
+      Globally unique S3 bucket name for CloudTrail logs.
+      The default appends to account ID. Override this parameter at deploy
+      time if you need a different name (must be lowercase, no underscores).
+    Default: "cstt-cloudtrail-logs-ACCOUNTID"
+
+  CloudTrailName:
+    Type: String
+    Description: Name for the CloudTrail trail.
+    Default: "cstt-trail"
+
+  CloudWatchLogGroupName:
+    Type: String
+    Description: CloudWatch Logs group that CloudTrail delivers events into.
+    Default: "/cstt/cloudtrail"
+
+  LogRetentionDays:
+    Type: Number
+    Description: Retention period (days) for CloudWatch log groups.
+    Default: 90
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 3653]
+
+  FailedLoginThreshold:
+    Type: Number
+    Description: Number of failed console logins within the evaluation period before alarming.
+    Default: 3
+
+  SensitiveAPIThreshold:
+    Type: Number
+    Description: Number of sensitive API calls within the evaluation period before alarming.
+    Default: 1
+
+  EC2StateChangeThreshold:
+    Type: Number
+    Description: Number of EC2 state-change events before alarming.
+    Default: 1
+
+  CPUAlarmThreshold:
+    Type: Number
+    Description: CPU utilisation percentage that triggers the high-CPU alarm.
+    Default: 80
+
+  # ── EC2 Auto-Recovery target ──────────────────────────────────────────────
+  # Supply the Instance ID of a specific instance to protect with auto-recovery.
+  # Leave blank to skip creating the auto-recovery alarm.
+  RecoveryInstanceId:
+    Type: String
+    Description: >
+      (Optional) EC2 Instance ID to attach the auto-recovery alarm to.
+      Leave blank to skip.
+    Default: ""
+
+  EnvironmentTag:
+    Type: String
+    Default: "dev"
+    AllowedValues: [dev, staging, prod]
+
+  # AWS Academy / Learner Lab environments provide a pre-existing LabRole.
+  # CloudFormation cannot create new IAM roles in these environments.
+  # Find your LabRole ARN in the console: IAM → Roles → LabRole → copy ARN.
+  LabRoleArn:
+    Type: String
+    Description: >
+      ARN of the existing IAM role that CloudTrail will use to deliver logs to
+      CloudWatch. In AWS Academy use the LabRole ARN (IAM → Roles → LabRole).
+    Default: "arn:aws:iam::551861231840:role/LabRole"
+
+# ── Conditions ────────────────────────────────────────────────────────────────
+Conditions:
+  CreateRecoveryAlarm: !Not [!Equals [!Ref RecoveryInstanceId, ""]]
+
+# ── Resources ─────────────────────────────────────────────────────────────────
+Resources:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 1. SNS TOPIC — Admin notifications
+  # ════════════════════════════════════════════════════════════════════════════
+  AdminAlertTopic:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      TopicName: "cstt-admin-alerts"
+      DisplayName: "CSTT Admin Alerts"
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentTag
+  # NOTE: Email subscription is managed manually to avoid replacement errors
+  # on stack updates. After deploying, go to SNS → Topics → cstt-admin-alerts
+  # → Create subscription → Protocol: Email → enter your email → confirm.
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 2. S3 BUCKET — CloudTrail log storage
+  # ════════════════════════════════════════════════════════════════════════════
+  CloudTrailBucket:
+    Type: "AWS::S3::Bucket" 
+    DeletionPolicy: Retain #the bucket survives even if the stack is deleted or replaced
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref TrailBucketName
+      VersioningConfiguration:
+        Status: Enabled #keeps object version history
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: "aws:kms"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: "TransitionToIA"
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 90
+                StorageClass: STANDARD_IA
+            ExpirationInDays: 365
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentTag   ##Why is this needed here? Isn't EnTag for EX2 auto-recovery?
+
+  # Bucket policy — required by CloudTrail to write objects
+  CloudTrailBucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref CloudTrailBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "AWSCloudTrailAclCheck"
+            Effect: Allow
+            Principal:
+              Service: "cloudtrail.amazonaws.com"
+            Action: "s3:GetBucketAcl" ##Why add this?
+            Resource: !GetAtt CloudTrailBucket.Arn
+          - Sid: "AWSCloudTrailWrite"
+            Effect: Allow 
+            Principal:
+              Service: "cloudtrail.amazonaws.com"
+            Action: "s3:PutObject"
+            Resource: !Sub "${CloudTrailBucket.Arn}/AWSLogs/${AWS::AccountId}/*"
+            Condition:
+              StringEquals:
+                "s3:x-amz-acl": "bucket-owner-full-control"
+          - Sid: "DenyNonTLS"
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt CloudTrailBucket.Arn
+              - !Sub "${CloudTrailBucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 3. CLOUDWATCH LOG GROUP — receives CloudTrail events
+  # ════════════════════════════════════════════════════════════════════════════
+  CloudTrailLogGroup:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName: !Ref CloudWatchLogGroupName
+      RetentionInDays: !Ref LogRetentionDays
+
+  # NOTE: In AWS Academy / Learner Lab environments, iam:CreateRole is blocked.
+  # We reference the pre-existing LabRole ARN directly instead of creating a new role.
+  # LabRole already has CloudWatch Logs write permissions attached by the lab environment.
+  # If deploying outside a lab, replace the LabRoleArn parameter value with a role ARN
+  # that has logs:CreateLogStream and logs:PutLogEvents on the log group.
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 4. CLOUDTRAIL — multi-region trail
+  # ════════════════════════════════════════════════════════════════════════════
+  CloudTrail:
+    Type: "AWS::CloudTrail::Trail"
+    DependsOn: CloudTrailBucketPolicy
+    Properties:
+      TrailName: !Ref CloudTrailName
+      S3BucketName: !Ref CloudTrailBucket
+      IncludeGlobalServiceEvents: true
+      IsMultiRegionTrail: true
+      EnableLogFileValidation: true
+      IsLogging: true
+      CloudWatchLogsLogGroupArn: !GetAtt CloudTrailLogGroup.Arn
+      CloudWatchLogsRoleArn: !Ref LabRoleArn
+      EventSelectors:
+        - ReadWriteType: "All"
+          IncludeManagementEvents: true
+          DataResources:
+            - Type: "AWS::S3::Object"
+              Values: ["arn:aws:s3:::"]    # all S3 objects
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentTag
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 5. METRIC FILTERS
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # ── 5a. Failed console login attempts ────────────────────────────────────
+  FailedLoginFilter:
+    Type: "AWS::Logs::MetricFilter"
+    Properties:
+      LogGroupName: !Ref CloudTrailLogGroup
+      FilterName: "FailedConsoleLogins"
+      FilterPattern: >-
+        { ($.eventName = ConsoleLogin) && ($.errorMessage = "Failed authentication") }
+      MetricTransformations:
+        - MetricNamespace: "CSTT/Security"
+          MetricName: "FailedConsoleLogins"
+          MetricValue: "1"
+          DefaultValue: 0
+
+  # ── 5b. Sensitive API actions ─────────────────────────────────────────────
+  # Covers: StopInstances, TerminateInstances, PutBucketPolicy, DeleteBucketPolicy,
+  #         DeleteTrail, StopLogging, AuthorizeSecurityGroupIngress, CreateUser,
+  #         AttachUserPolicy, CreateAccessKey
+  SensitiveAPIFilter:
+    Type: "AWS::Logs::MetricFilter"
+    Properties:
+      LogGroupName: !Ref CloudTrailLogGroup
+      FilterName: "SensitiveAPIActions"
+      FilterPattern: >-
+        { ($.eventName = StopInstances) ||
+          ($.eventName = TerminateInstances) ||
+          ($.eventName = PutBucketPolicy) ||
+          ($.eventName = DeleteBucketPolicy) ||
+          ($.eventName = DeleteTrail) ||
+          ($.eventName = StopLogging) ||
+          ($.eventName = AuthorizeSecurityGroupIngress) ||
+          ($.eventName = CreateUser) ||
+          ($.eventName = AttachUserPolicy) ||
+          ($.eventName = CreateAccessKey) }
+      MetricTransformations:
+        - MetricNamespace: "CSTT/Security"
+          MetricName: "SensitiveAPIActions"
+          MetricValue: "1"
+          DefaultValue: 0
+
+  # ── 5c. EC2 state changes (start / stop / terminate) ─────────────────────
+  EC2StateChangeFilter:
+    Type: "AWS::Logs::MetricFilter"
+    Properties:
+      LogGroupName: !Ref CloudTrailLogGroup
+      FilterName: "EC2StateChanges"
+      FilterPattern: >-
+        { ($.eventName = StartInstances) ||
+          ($.eventName = StopInstances) ||
+          ($.eventName = TerminateInstances) ||
+          ($.eventName = RebootInstances) }
+      MetricTransformations:
+        - MetricNamespace: "CSTT/Operations"
+          MetricName: "EC2StateChanges"
+          MetricValue: "1"
+          DefaultValue: 0
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 6. CLOUDWATCH ALARMS
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # ── 6a. Failed logins alarm ───────────────────────────────────────────────
+  FailedLoginAlarm:
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      AlarmName: "CSTT-FailedConsoleLogins"
+      AlarmDescription: !Sub "Alert: ≥${FailedLoginThreshold} failed console login(s) detected."
+      Namespace: "CSTT/Security"
+      MetricName: "FailedConsoleLogins"
+      Statistic: "Sum"
+      Period: 300        # 5-minute window
+      EvaluationPeriods: 1
+      Threshold: !Ref FailedLoginThreshold
+      ComparisonOperator: "GreaterThanOrEqualToThreshold"
+      TreatMissingData: "notBreaching"
+      AlarmActions:
+        - !Ref AdminAlertTopic
+      OKActions:
+        - !Ref AdminAlertTopic
+
+  # ── 6b. Sensitive API alarm ───────────────────────────────────────────────
+  SensitiveAPIAlarm:
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      AlarmName: "CSTT-SensitiveAPIActions"
+      AlarmDescription: !Sub "Alert: ≥${SensitiveAPIThreshold} sensitive API action(s) detected."
+      Namespace: "CSTT/Security"
+      MetricName: "SensitiveAPIActions"
+      Statistic: "Sum"
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref SensitiveAPIThreshold
+      ComparisonOperator: "GreaterThanOrEqualToThreshold"
+      TreatMissingData: "notBreaching"
+      AlarmActions:
+        - !Ref AdminAlertTopic
+      OKActions:
+        - !Ref AdminAlertTopic
+
+  # ── 6c. EC2 state-change alarm ────────────────────────────────────────────
+  EC2StateChangeAlarm:
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      AlarmName: "CSTT-EC2StateChanges"
+      AlarmDescription: !Sub "Alert: ≥${EC2StateChangeThreshold} EC2 state change(s) detected."
+      Namespace: "CSTT/Operations"
+      MetricName: "EC2StateChanges"
+      Statistic: "Sum"
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref EC2StateChangeThreshold
+      ComparisonOperator: "GreaterThanOrEqualToThreshold"
+      TreatMissingData: "notBreaching"
+      AlarmActions:
+        - !Ref AdminAlertTopic
+      OKActions:
+        - !Ref AdminAlertTopic
+
+  # ── 6d. High CPU alarm (ASG instances) ───────────────────────────────────
+  # Targets all instances in the ASG by using the AutoScalingGroupName dimension.
+  HighCPUAlarm:
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      AlarmName: "CSTT-HighCPUUtilisation"
+      AlarmDescription: !Sub "Alert: Average CPU ≥${CPUAlarmThreshold}% on ASG instances."
+      Namespace: "AWS/EC2"
+      MetricName: "CPUUtilization"
+      Dimensions:
+        - Name: "AutoScalingGroupName"
+          Value: !Ref ASGName
+      Statistic: "Average"
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref CPUAlarmThreshold
+      ComparisonOperator: "GreaterThanOrEqualToThreshold"
+      TreatMissingData: "notBreaching"
+      AlarmActions:
+        - !Ref AdminAlertTopic
+      OKActions:
+        - !Ref AdminAlertTopic
+
+  # ── 6e. EC2 Auto-Recovery alarm ───────────────────────────────────────────
+  # Created only when RecoveryInstanceId is provided.
+  # Uses the EC2 built-in "recover" action — reboots the instance on the same
+  # host (preserving private IP, EIP, and instance store) after 2 consecutive
+  # failed status checks. SNS notification is sent in addition to recovery.
+  #
+  # NOTE: Auto-recovery requires the instance to use an EBS root volume and
+  # be in a supported instance family (most modern families are supported).
+  EC2AutoRecoveryAlarm:
+    Type: "AWS::CloudWatch::Alarm"
+    Condition: CreateRecoveryAlarm
+    Properties:
+      AlarmName: "CSTT-EC2AutoRecovery"
+      AlarmDescription: !Sub "Auto-recovery triggered for instance ${RecoveryInstanceId}."
+      Namespace: "AWS/EC2"
+      MetricName: "StatusCheckFailed_System"
+      Dimensions:
+        - Name: "InstanceId"
+          Value: !Ref RecoveryInstanceId
+      Statistic: "Minimum"
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: "GreaterThanOrEqualToThreshold"
+      TreatMissingData: "notBreaching"
+      AlarmActions:
+        - !Sub "arn:aws:automate:${AWS::Region}:ec2:recover"
+        - !Ref AdminAlertTopic
+      OKActions:
+        - !Ref AdminAlertTopic
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # 7. CLOUDWATCH DASHBOARD
+  # ════════════════════════════════════════════════════════════════════════════
+  #
+  # Widgets:
+  #   Row 1 — EC2 CPU (per ASG), EC2 State Changes (log metric)
+  #   Row 2 — Failed Console Logins, Sensitive API Actions
+  #   Row 3 — S3 All Requests (bucket-level), S3 4xx Errors
+  #   Row 4 — GuardDuty Findings placeholder (shows "No data" until GuardDuty
+  #            is enabled; no template changes required — enabling GuardDuty
+  #            automatically starts publishing to this namespace/metric)
+  #
+  # To activate the GuardDuty widget:
+  #   1. Enable GuardDuty in your account (Console → GuardDuty → Get Started).
+  #   2. Findings are automatically published to CloudWatch under namespace
+  #      "GuardDutyFindingCounts" with metric "FindingCount".
+  #   3. The widget below will begin displaying data with no further changes.
+  #
+  MonitoringDashboard:
+    Type: "AWS::CloudWatch::Dashboard"
+    Properties:
+      DashboardName: "CSTT-Monitoring"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "EC2 CPU Utilisation (ASG)",
+                "view": "timeSeries",
+                "stacked": false,
+                "metrics": [[
+                  "AWS/EC2", "CPUUtilization",
+                  "AutoScalingGroupName", "${ASGName}",
+                  { "stat": "Average", "period": 300, "label": "Avg CPU %" }
+                ]],
+                "yAxis": { "left": { "min": 0, "max": 100, "label": "%" } },
+                "period": 300,
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "EC2 State Changes (CloudTrail)",
+                "view": "timeSeries",
+                "metrics": [[
+                  "CSTT/Operations", "EC2StateChanges",
+                  { "stat": "Sum", "period": 300, "label": "State Changes" }
+                ]],
+                "period": 300,
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "Failed Console Login Attempts",
+                "view": "timeSeries",
+                "metrics": [[
+                  "CSTT/Security", "FailedConsoleLogins",
+                  { "stat": "Sum", "period": 300, "label": "Failed Logins" }
+                ]],
+                "period": 300,
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "Sensitive API Actions (CloudTrail)",
+                "view": "timeSeries",
+                "metrics": [[
+                  "CSTT/Security", "SensitiveAPIActions",
+                  { "stat": "Sum", "period": 300, "label": "Sensitive Actions" }
+                ]],
+                "period": 300,
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 12, "width": 12, "height": 6,
+              "properties": {
+                "title": "S3 All Requests (CloudTrail bucket)",
+                "view": "timeSeries",
+                "metrics": [[
+                  "AWS/S3", "AllRequests",
+                  "BucketName", "${TrailBucketName}",
+                  "FilterId", "EntireBucket",
+                  { "stat": "Sum", "period": 86400, "label": "All Requests (daily)" }
+                ]],
+                "period": 86400,
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 12, "width": 12, "height": 6,
+              "properties": {
+                "title": "S3 4xx Errors (CloudTrail bucket)",
+                "view": "timeSeries",
+                "metrics": [[
+                  "AWS/S3", "4xxErrors",
+                  "BucketName", "${TrailBucketName}",
+                  "FilterId", "EntireBucket",
+                  { "stat": "Sum", "period": 86400, "label": "4xx Errors (daily)" }
+                ]],
+                "period": 86400,
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 18, "width": 24, "height": 6,
+              "properties": {
+                "title": "GuardDuty Finding Counts (activates automatically once GuardDuty is enabled)",
+                "view": "timeSeries",
+                "metrics": [[
+                  "GuardDutyFindingCounts", "FindingCount",
+                  { "stat": "Sum", "period": 3600, "label": "Findings (hourly)" }
+                ]],
+                "annotations": {
+                  "horizontal": [{
+                    "label": "No data until GuardDuty is enabled",
+                    "value": 0
+                  }]
+                },
+                "period": 3600,
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+# ── Outputs ───────────────────────────────────────────────────────────────────
+Outputs:
+
+  SNSTopicArn:
+    Description: "ARN of the admin alert SNS topic"
+    Value: !Ref AdminAlertTopic
+    Export:
+      Name: !Sub "${AWS::StackName}-SNSTopicArn"
+
+  CloudTrailBucketName:
+    Description: "S3 bucket receiving CloudTrail logs"
+    Value: !Ref CloudTrailBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-TrailBucket"
+
+  CloudTrailArn:
+    Description: "ARN of the CloudTrail trail"
+    Value: !GetAtt CloudTrail.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-CloudTrailArn"
+
+  CloudWatchLogGroupName:
+    Description: "CloudWatch log group receiving CloudTrail events"
+    Value: !Ref CloudTrailLogGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-LogGroupName"
+
+  DashboardURL:
+    Description: "Direct link to the CloudWatch dashboard"
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=CSTT-Monitoring"
